@@ -208,7 +208,7 @@ async def steer_car(ratio, speed):
                 motion_sensor.reset_yaw(0)
                 #searched 60 degree one side, still can't find line, switch other side to search
                 ratio *= -1
-                trial == 2
+                trial = 2
                 
             else:
                 run = -1

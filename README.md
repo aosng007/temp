@@ -87,14 +87,4 @@ Stop motors when run ≠ 1
 | `intersection` | Intersection counter (reserved for future logic) |
 | `dark_side` | Flag for inverted-colour half of the course |
 
----
 
-## Known Issue
-
-Line 211 contains a comparison (`==`) where an assignment (`=`) was likely intended:
-
-```python
-trial == 2   # ← should be  trial = 2
-```
-
-This means the second search direction is never triggered and `trial` stays at `1` indefinitely.
