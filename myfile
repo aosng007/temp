@@ -1,0 +1,417 @@
+from hub import button, light_matrix, motion_sensor, port 
+from app import linegraph
+import motor, motor_pair as mp
+import distance_sensor, force_sensor
+import color, color_sensor as cs
+import runloop
+
+mp.pair(mp.PAIR_1, port.A, port.B) #wheel motor pair
+motion_sensor.set_yaw_face(motion_sensor.TOP)
+DISTANCE_PORT = port.D
+SPACE = color.WHITE
+LINE = color.BLACK
+GREEN = color.GREEN
+YELLOW = color.YELLOW
+LEFT_SENSOR = port.E
+RIGHT_SENSOR = port.F
+
+run, tick = 0, 0
+turn_cnt = 0
+straight_cnt = 0
+base_speed = 180  #180 - large motor, 200 - medium motor
+pre_speed = 0
+MAX_SPEED = 280   #240 - large motor, 280 - medium motor
+MIN_SPEED = 160   #140 - large motor, 160 - medium motor
+diff_speed = 0
+intersection = 0
+dark_side = 0
+mode = 1
+
+
+async def go_straight():
+    global dark_side, base_speed, diff_speed, turn_cnt, straight_cnt, pre_speed, tick, mode
+    if mode == 1:
+        light_matrix.show_image(light_matrix.IMAGE_HAPPY)
+    elif mode == 2:
+        light_matrix.show_image(light_matrix.IMAGE_GHOST)
+
+    while cs.color(LEFT_SENSOR) == SPACE and cs.color(RIGHT_SENSOR) == SPACE:
+        if base_speed < MAX_SPEED:
+            diff_speed = MAX_SPEED - base_speed #update diff_speed
+        else:
+            diff_speed = 0
+
+        if turn_cnt > 0.5: #reduce base_speed by turn_cnt
+            base_speed = int(max(MAX_SPEED // (1 + turn_cnt / 2), MIN_SPEED))
+            turn_cnt -= 0.05
+
+        else:   #speed up if turn_cnt ~= 0 and enough straight move 
+            if base_speed < MAX_SPEED and straight_cnt > 20:    
+                new_speed = base_speed + diff_speed // 100 #accelerate new_speed
+                base_speed = min(new_speed, MAX_SPEED)  #apply new speed but limit to MAX_SPEED
+                straight_cnt -= 20
+        
+        #adjust final speed for ramps
+        if motion_sensor.tilt_angles()[1] // -10 > 3:
+            base_speed = MAX_SPEED
+        if motion_sensor.tilt_angles()[1] // -10 < -3:
+            base_speed = MIN_SPEED
+
+        # linegraph.plot(color.RED, tick, base_speed)
+        mp.move(mp.PAIR_1, 0, velocity=base_speed)                               
+        await runloop.sleep_ms(10)
+        straight_cnt += 1
+        tick += 1
+
+async def steer_car(ratio, speed):
+    global turn_cnt, run, intersection, straight_cnt, mode, tick
+    straight_cnt = 0
+    turn_cnt = 0
+    #limit turning speed
+    speed = min(speed, 220)
+    print("turn speed: {}".format(speed))
+
+    #steer car back to line
+    turn_degree = 0
+    if ratio < 0:
+        while True:
+            turn_cnt += 1
+            mp.move(mp.PAIR_1, ratio, velocity=speed)
+            await runloop.sleep_ms(10)
+            turn_degree = motion_sensor.tilt_angles()[0] // -10
+
+            if cs.color(LEFT_SENSOR) == SPACE:
+                #apple micro direction adjustment
+                for _ in range(10):
+                    mp.move(mp.PAIR_1, -100, velocity=speed)
+                    await runloop.sleep_ms(10)
+                turn_degree = motion_sensor.tilt_angles()[0] // -10
+                break
+            
+            if cs.color(LEFT_SENSOR) == LINE and cs.color(RIGHT_SENSOR) == LINE:
+                if abs(turn_degree) > 80 or turn_cnt > 50:
+                    #correct to original heading
+                    while True:
+                        if motion_sensor.tilt_angles()[0] // -10 < 0:
+                            mp.move(mp.PAIR_1, 100, velocity=speed)
+                            await runloop.sleep_ms(10)
+                        else:
+                            mp.move(mp.PAIR_1, -100, velocity=speed)
+                            await runloop.sleep_ms(10)
+                        
+                        if abs(motion_sensor.tilt_angles()[0] // -10) < 3:
+                            mp.stop(mp.PAIR_1)
+                            await runloop.sleep_ms(10)
+                            break
+                    
+                    await switch_mode(mode)
+                    #move forward for better line correction
+                    # for _ in range(10):
+                    #     mp.move(mp.PAIR_1, 0, velocity=speed)
+                    #     await runloop.sleep_ms(10)
+                    turn_degree = motion_sensor.tilt_angles()[0] // -10
+                    if turn_degree < 0:
+                        light_matrix.show_image(light_matrix.IMAGE_ARROW_W)
+                    else:
+                        light_matrix.show_image(light_matrix.IMAGE_ARROW_E)
+                    print("turn degree: {}".format(turn_degree))
+                    run = -1
+                    break
+
+    else:
+        while True:
+            turn_cnt += 1
+            mp.move(mp.PAIR_1, ratio, velocity=speed)
+            await runloop.sleep_ms(10)
+            turn_degree = motion_sensor.tilt_angles()[0] // -10
+
+            if cs.color(RIGHT_SENSOR) == SPACE:
+                #apple micro direction adjustment
+                for _ in range(10):
+                    mp.move(mp.PAIR_1, 100, velocity=speed)
+                    await runloop.sleep_ms(10)
+                turn_degree = motion_sensor.tilt_angles()[0] // -10
+                break
+
+            if cs.color(LEFT_SENSOR) == LINE and cs.color(RIGHT_SENSOR) == LINE:
+                if abs(turn_degree) > 80 or turn_cnt > 50:
+                    #correct to original heading
+                    while True:
+                        if motion_sensor.tilt_angles()[0] // -10 < 0:
+                            mp.move(mp.PAIR_1, 100, velocity=speed)
+                            await runloop.sleep_ms(10)
+                        else:
+                            mp.move(mp.PAIR_1, -100, velocity=speed)
+                            await runloop.sleep_ms(10)
+
+                        if abs(motion_sensor.tilt_angles()[0] // -10) < 3:
+                            mp.stop(mp.PAIR_1)
+                            await runloop.sleep_ms(10)
+                            break
+
+                    await switch_mode(mode)
+                    #move forward for better line correction
+                    # for _ in range(10):
+                    #     mp.move(mp.PAIR_1, -30, velocity=speed)
+                    #     await runloop.sleep_ms(10)
+                    turn_degree = motion_sensor.tilt_angles()[0] // -10
+                    if turn_degree < 0:
+                        light_matrix.show_image(light_matrix.IMAGE_ARROW_W)
+                    else:
+                        light_matrix.show_image(light_matrix.IMAGE_ARROW_E)
+                    print("turn degree: {}".format(turn_degree))
+                    run = -1
+                    break
+    
+
+    #heading CORRECTION after switch mode
+    tick = 0
+    if abs(run) == 2:
+        mp.move_for_degrees(mp.PAIR_1, 100, 0)
+        await runloop.sleep_ms(10)
+        if turn_degree < 0: #guess the correction direction based on turn_degree, but no gaurantee
+            ratio = 80
+        else:
+            ratio = -80
+
+        trial = 1   #variable to mark #nd trials
+        while True:
+            tick += 1
+            while abs(motion_sensor.tilt_angles()[0] // -10) < 70 * trial:
+                mp.move(mp.PAIR_1, ratio, velocity=70)
+                await runloop.sleep_ms(10)
+                # linegraph.plot(color.AZURE, tick, motion_sensor.tilt_angles()[0] // -10)
+
+                if ratio < 0 and cs.color(LEFT_SENSOR) == LINE:
+                    mp.move_for_degrees(mp.PAIR_1, 80, -100, velocity=100)
+                    await runloop.sleep_ms(10)
+                    print(motion_sensor.tilt_angles()[0] // -10)
+                    print("left line found")
+                    mp.stop(mp.PAIR_1)
+                    await runloop.sleep_ms(10)
+                    # run = -1
+                    # SystemExit()
+                    break
+
+                if ratio > 0 and cs.color(RIGHT_SENSOR) == LINE:
+                    mp.move_for_degrees(mp.PAIR_1, 80, 100, velocity=100)
+                    await runloop.sleep_ms(10)
+                    print(motion_sensor.tilt_angles()[0] // -10)
+                    print("right line found")
+                    mp.stop(mp.PAIR_1)
+                    await runloop.sleep_ms(10)
+                    # run = -1
+                    # SystemExit()
+                    break
+
+            if trial == 1:
+                motion_sensor.reset_yaw(0)
+                #searched 60 degree one side, still can't find line, switch other side to search
+                ratio *= -1
+                trial == 2
+                
+            else:
+                run = -1
+                light_matrix.show_image(light_matrix.IMAGE_SAD)
+                mp.stop(mp.PAIR_1)
+                await runloop.sleep_ms(10)
+                print("can't find the line")
+                SystemExit()
+           
+        if run != -1:
+            mp.stop(mp.PAIR_1)
+            await runloop.sleep_ms(10)
+            run = 1
+
+    
+async def turn_any_degree(direction, degree):
+    global run
+    motion_sensor.reset_yaw(0)
+    forward_cnt = 0
+    if direction == 1 and run == 1:  #CCW 90 degree
+        run = 0
+        #go forward until left sensor sense black
+        while cs.color(LEFT_SENSOR) != LINE:
+            mp.move(mp.PAIR_1, 0, velocity=100)
+            await runloop.sleep_ms(10)
+            forward_cnt += 1
+            if forward_cnt > 25 and cs.color(LEFT_SENSOR) == GREEN and cs.color(RIGHT_SENSOR) == GREEN:
+                run = -1    #in green rescue zone
+                return
+        
+        #further forward till  over the line
+        while True:
+            mp.move(mp.PAIR_1, 0, velocity=100)
+            await runloop.sleep_ms(10)
+            if cs.color(LEFT_SENSOR) == SPACE:
+                mp.stop(mp.PAIR_1)
+                await runloop.sleep_ms(10)
+                break
+        mp.move_for_degrees(mp.PAIR_1, 45, 0, velocity=100)
+        
+        #start the turn
+        turn_degree = 0
+        while turn_degree > degree * -1:
+            mp.move(mp.PAIR_1, -100, velocity=120)
+            await runloop.sleep_ms(5)
+            turn_degree = motion_sensor.tilt_angles()[0]//-10
+            if cs.color(RIGHT_SENSOR) == LINE and turn_degree < -45:
+                break
+        mp.stop(mp.PAIR_1)
+        await runloop.sleep_ms(10)
+        #resume normal line tracing
+        run = 1
+
+    if direction == 2 and run == 1:     #CW 90 degree
+        run = 0
+        #go forward until right sensor sense black
+        while cs.color(RIGHT_SENSOR) != LINE:
+            mp.move(mp.PAIR_1, 0, velocity=100)
+            await runloop.sleep_ms(10)
+            forward_cnt += 1
+            if forward_cnt > 25 and cs.color(LEFT_SENSOR) == GREEN and cs.color(RIGHT_SENSOR) == GREEN:
+                run = -1    #in green rescue zone
+                return
+                
+        #further forward till over the line
+        while True:
+            mp.move(mp.PAIR_1, 0, velocity=100)
+            await runloop.sleep_ms(10)
+            if cs.color(RIGHT_SENSOR) == SPACE:
+                mp.stop(mp.PAIR_1)
+                await runloop.sleep_ms(10)
+                break
+        mp.move_for_degrees(mp.PAIR_1, 45, 0, velocity=100)
+
+        #start the turn
+        turn_degree = 0
+        while turn_degree < degree:
+            mp.move(mp.PAIR_1, 100, velocity=120)
+            await runloop.sleep_ms(5)
+            turn_degree = motion_sensor.tilt_angles()[0]//-10
+            if cs.color(LEFT_SENSOR) == LINE and turn_degree > 45:
+                break
+        mp.stop(mp.PAIR_1)
+        await runloop.sleep_ms(10)
+        #resume normal line tracing
+        run = 1
+        
+async def go_circle(direction, degree):
+    global run
+    turn_angle = 0
+    if direction == 1: #CW circle
+        motion_sensor.reset_yaw(0)
+        while cs.color(RIGHT_SENSOR) != LINE and turn_angle < degree:
+            mp.move(mp.PAIR_1, 35, velocity=190)
+            await runloop.sleep_ms(20)
+            turn_angle = motion_sensor.tilt_angles()[0] // -10
+        mp.stop(mp.PAIR_1)
+        run = 0
+
+    if direction == 2: #CCW circle
+        motion_sensor.reset_yaw(0)
+        while cs.color(LEFT_SENSOR) != LINE and turn_angle > degree * -1:
+            mp.move(mp.PAIR_1, -35, velocity=190)
+            await runloop.sleep_ms(20)
+            turn_angle = motion_sensor.tilt_angles()[0] // -10
+        mp.stop(mp.PAIR_1)
+        run = 0
+
+
+async def switch_mode(current_mode):
+    global LINE, SPACE, mode
+    if current_mode == 1:   #currently normal mode
+        mode = 2
+        LINE = color.WHITE
+        SPACE = color.BLACK
+        light_matrix.show_image(light_matrix.IMAGE_GHOST)
+
+    if current_mode == 2: #currently dark mode
+        mode = 1
+        LINE = color.BLACK
+        SPACE = color.WHITE
+        light_matrix.show_image(light_matrix.IMAGE_HAPPY)
+
+async def find_rescue(search_degree, interval):
+    global run
+    distances = []
+    motion_sensor.reset_yaw(0)
+    turn_angle = 0
+    #turn car to far left
+    while turn_angle > search_degree * -1:
+        mp.move(mp.PAIR_1, -100, velocity=60)
+        await runloop.sleep_ms(10)
+        turn_angle = motion_sensor.tilt_angles()[0] // -10
+    
+    motion_sensor.reset_yaw(0)
+    turn_angle = 0
+    pre_angle = 0
+    #start scanning from far left
+    while turn_angle < search_degree * 2:
+        mp.move(mp.PAIR_1, 100, velocity=60)
+        await runloop.sleep_ms(10)
+        turn_angle = motion_sensor.tilt_angles()[0] // -10
+        if turn_angle > pre_angle + 10:
+            distance = distance_sensor.distance(port.D)
+            if distance != -1:
+                distances.append((distance, turn_angle))
+                # linegraph.plot(color.BLUE, turn_angle, distance)
+            pre_angle = turn_angle
+    
+    mp.stop(mp.PAIR_1)
+    min_distance = min(distances)
+    print(distances)
+    print(min_distance)
+    #turn towards min distance angle, start from far right
+    while turn_angle > min_distance[1]:
+        mp.move(mp.PAIR_1, -100, velocity=60)
+        await runloop.sleep_ms(10)
+        turn_angle = motion_sensor.tilt_angles()[0] // -10
+    mp.stop(mp.PAIR_1)
+    
+#Monday class code
+async def main():
+    global dark_side, base_speed, turn_cnt, run, mode
+    while not button.pressed(button.RIGHT):
+        if button.pressed(button.LEFT):
+            await go_circle(1, 270)
+        pass
+    motion_sensor.reset_yaw(0)
+    #start with normal mode
+    mode = 2
+    await switch_mode(2)
+    run = 1
+    print ("start tracing")
+    while run == 1:
+        if cs.color(LEFT_SENSOR) == SPACE and cs.color(RIGHT_SENSOR) == SPACE:
+            motion_sensor.reset_yaw(0)  #reset yaw so record the entry angle of every turn (car-steer)
+            await go_straight()
+        elif cs.color(LEFT_SENSOR) == LINE and cs.color(RIGHT_SENSOR) == SPACE:
+            await steer_car(-80, base_speed)
+        elif cs.color(LEFT_SENSOR) == SPACE and cs.color(RIGHT_SENSOR) == LINE:
+            await steer_car(80, base_speed)
+        elif cs.color(LEFT_SENSOR) == LINE and cs.color(RIGHT_SENSOR) == LINE:
+            mp.stop(mp.PAIR_1)
+        elif cs.color(LEFT_SENSOR) == YELLOW or cs.color(RIGHT_SENSOR) == YELLOW:
+            mp.stop(mp.PAIR_1)
+        elif cs.color(LEFT_SENSOR) == GREEN and cs.color(RIGHT_SENSOR) == GREEN:
+            mp.stop(mp.PAIR_1)
+        elif cs.color(LEFT_SENSOR) == GREEN and cs.color(RIGHT_SENSOR) != GREEN: 
+            light_matrix.show_image(light_matrix.IMAGE_ARROW_W)
+            await turn_any_degree(1, 50)
+            if run == -1:
+                #rescue search begin
+                mp.stop(mp.PAIR_1)
+                await find_rescue(80, 5)
+        elif cs.color(LEFT_SENSOR) != GREEN and cs.color(RIGHT_SENSOR) == GREEN:
+            light_matrix.show_image(light_matrix.IMAGE_ARROW_E)
+            await turn_any_degree(2, 50)
+            if run == -1:
+                #rescue search begin
+                mp.stop(mp.PAIR_1)
+                await find_rescue(80, 5)
+
+    if run != 1:
+        mp.stop(mp.PAIR_1)
+        
+runloop.run(main())
